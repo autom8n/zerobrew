@@ -381,6 +381,40 @@ impl ApiClient {
         }
     }
 
+    pub async fn get_all_casks_raw(&self) -> Result<String, Error> {
+        let url = format!("{}.json", self.cask_base_url);
+
+        match self.cached_get(&url).await? {
+            CachedGetResult::Cached(body) => Ok(body),
+            CachedGetResult::Fresh(response) => {
+                if !response.status().is_success() {
+                    return Err(Error::NetworkFailure {
+                        message: format!("bulk cask fetch returned HTTP {}", response.status()),
+                    });
+                }
+
+                let etag = response
+                    .headers()
+                    .get("etag")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                let last_modified = response
+                    .headers()
+                    .get("last-modified")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+
+                let body = response
+                    .text()
+                    .await
+                    .map_err(Error::network("failed to read bulk cask response body"))?;
+
+                self.store_response_in_cache(&url, etag, last_modified, &body);
+                Ok(body)
+            }
+        }
+    }
+
     pub async fn suggest_formulas(&self, query: &str, limit: usize) -> Result<Vec<String>, Error> {
         if limit == 0 || query.trim().is_empty() {
             return Ok(Vec::new());

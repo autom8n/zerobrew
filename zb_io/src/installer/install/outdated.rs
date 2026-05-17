@@ -10,6 +10,11 @@ impl Installer {
             name: name.to_string(),
         })?;
 
+        if let Some(token) = name.strip_prefix("cask:") {
+            let cask = self.api_client.get_cask(token).await?;
+            return cask_outdated(name, installed.version, installed.store_key, &cask);
+        }
+
         let formula = self.api_client.get_formula(name).await?;
         let is_source = installed.store_key.starts_with("source:");
 
@@ -50,8 +55,11 @@ impl Installer {
             return Ok((Vec::new(), Vec::new()));
         }
 
-        let installed_names: std::collections::HashSet<&str> =
-            installed.iter().map(|k| k.name.as_str()).collect();
+        let installed_formula_names: std::collections::HashSet<&str> = installed
+            .iter()
+            .filter(|k| !k.name.starts_with("cask:"))
+            .map(|k| k.name.as_str())
+            .collect();
 
         let bulk_raw = self.api_client.get_all_formulas_raw().await?;
         let bulk_values: Vec<serde_json::Value> = serde_json::from_str(&bulk_raw)
@@ -60,7 +68,7 @@ impl Installer {
         let mut bulk_map: HashMap<String, zb_core::Formula> = HashMap::new();
         for val in bulk_values {
             let name = match val.get("name").and_then(|n| n.as_str()) {
-                Some(n) if installed_names.contains(n) => n.to_string(),
+                Some(n) if installed_formula_names.contains(n) => n.to_string(),
                 _ => continue,
             };
             if let Ok(f) = serde_json::from_value(val) {
@@ -72,6 +80,23 @@ impl Installer {
         let mut warnings = Vec::new();
 
         for keg in &installed {
+            if let Some(token) = keg.name.strip_prefix("cask:") {
+                match self.api_client.get_cask(token).await {
+                    Ok(cask) => match cask_outdated(
+                        &keg.name,
+                        keg.version.clone(),
+                        keg.store_key.clone(),
+                        &cask,
+                    ) {
+                        Ok(Some(pkg)) => outdated.push(pkg),
+                        Ok(None) => {}
+                        Err(e) => warnings.push(format!("{}: {}", keg.name, e)),
+                    },
+                    Err(e) => warnings.push(format!("{}: {}", keg.name, e)),
+                }
+                continue;
+            }
+
             let is_tap = keg.name.contains('/');
 
             let formula = if is_tap || !bulk_map.contains_key(&keg.name) {
@@ -128,6 +153,39 @@ impl Installer {
     }
 }
 
+fn cask_outdated(
+    name: &str,
+    installed_version: String,
+    installed_sha256: String,
+    cask: &serde_json::Value,
+) -> Result<Option<OutdatedPackage>, Error> {
+    let current_version = cask
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: format!("failed to parse cask JSON for '{name}': missing version"),
+        })?
+        .to_string();
+    let current_sha256 = cask
+        .get("sha256")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    if installed_version == current_version && installed_sha256 == current_sha256 {
+        return Ok(None);
+    }
+
+    Ok(Some(OutdatedPackage {
+        name: name.to_string(),
+        installed_version,
+        installed_sha256,
+        current_version,
+        current_sha256,
+        is_source_build: false,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -174,8 +232,9 @@ mod tests {
         let prefix = tmp.path().join("homebrew");
         fs::create_dir_all(root.join("db")).unwrap();
 
-        let api_client =
-            ApiClient::with_base_url(format!("{}/formula", mock_server.uri())).unwrap();
+        let api_client = ApiClient::with_base_url(format!("{}/formula", mock_server.uri()))
+            .unwrap()
+            .with_cask_base_url(format!("{}/cask", mock_server.uri()));
         let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
         let store = Store::new(&root).unwrap();
         let cellar = Cellar::new(&root).unwrap();
@@ -237,6 +296,38 @@ mod tests {
 
         let suggestions = installer.suggest_formulas("pythn", 3).await.unwrap();
         assert_eq!(suggestions.first().map(String::as_str), Some("python"));
+    }
+
+    #[tokio::test]
+    async fn is_outdated_checks_casks_against_cask_api() {
+        let (mut installer, mock_server, _tmp) = test_installer().await;
+
+        {
+            let tx = installer.db.transaction().unwrap();
+            tx.record_install("cask:demo", "1.0.0", &"a".repeat(64))
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let current_sha = "b".repeat(64);
+        Mock::given(method("GET"))
+            .and(path("/cask/demo.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"{{
+                    "token": "demo",
+                    "version": "1.1.0",
+                    "url": "https://example.com/demo.zip",
+                    "sha256": "{current_sha}",
+                    "artifacts": [{{"app": ["Demo.app"]}}]
+                }}"#
+            )))
+            .mount(&mock_server)
+            .await;
+
+        let outdated = installer.is_outdated("cask:demo").await.unwrap().unwrap();
+        assert_eq!(outdated.name, "cask:demo");
+        assert_eq!(outdated.current_version, "1.1.0");
+        assert_eq!(outdated.current_sha256, current_sha);
     }
 
     #[tokio::test]
