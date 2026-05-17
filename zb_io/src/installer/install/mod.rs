@@ -294,6 +294,23 @@ impl Installer {
         names: &[String],
         link: bool,
     ) -> Result<ExecuteResult, Error> {
+        self.install_casks_with_options(
+            names,
+            crate::installer::CaskInstallOptions {
+                link_binaries: link,
+                link_apps: link,
+                link_fonts: link,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn install_casks_with_options(
+        &mut self,
+        names: &[String],
+        options: crate::installer::CaskInstallOptions,
+    ) -> Result<ExecuteResult, Error> {
         let mut installed = 0usize;
         for name in names {
             if self.is_installed(name) {
@@ -302,7 +319,8 @@ impl Installer {
             let token = name
                 .strip_prefix("cask:")
                 .expect("install_casks expects cask: prefixed names");
-            self.install_single_cask(token, link).await?;
+            self.install_single_cask_with_options(token, options)
+                .await?;
             installed += 1;
         }
         Ok(ExecuteResult { installed })
@@ -313,6 +331,23 @@ impl Installer {
         casks: &[(String, serde_json::Value)],
         link: bool,
     ) -> Result<ExecuteResult, Error> {
+        self.install_casks_from_json_with_options(
+            casks,
+            crate::installer::CaskInstallOptions {
+                link_binaries: link,
+                link_apps: link,
+                link_fonts: link,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn install_casks_from_json_with_options(
+        &mut self,
+        casks: &[(String, serde_json::Value)],
+        options: crate::installer::CaskInstallOptions,
+    ) -> Result<ExecuteResult, Error> {
         let mut installed = 0usize;
         let mut first_error = None;
         for (token, cask_json) in casks {
@@ -320,7 +355,7 @@ impl Installer {
                 continue;
             }
             match self
-                .install_single_cask_from_json(token, cask_json.clone(), link)
+                .install_single_cask_from_json_with_options(token, cask_json.clone(), options)
                 .await
             {
                 Ok(()) => installed += 1,

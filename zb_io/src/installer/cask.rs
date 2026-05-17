@@ -20,6 +20,35 @@ pub struct CaskFont {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaskPkg {
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaskAppImage {
+    pub source: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaskGenericArtifact {
+    pub source: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaskInstaller {
+    Manual {
+        source: String,
+    },
+    Script {
+        executable: String,
+        args: Vec<String>,
+        sudo: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCask {
     pub install_name: String,
     pub token: String,
@@ -29,9 +58,42 @@ pub struct ResolvedCask {
     pub binaries: Vec<CaskBinary>,
     pub apps: Vec<CaskApp>,
     pub fonts: Vec<CaskFont>,
+    pub pkgs: Vec<CaskPkg>,
+    pub installers: Vec<CaskInstaller>,
+    pub appimages: Vec<CaskAppImage>,
+    pub artifacts: Vec<CaskGenericArtifact>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaskInstallOptions {
+    pub link_binaries: bool,
+    pub link_apps: bool,
+    pub link_fonts: bool,
+    pub force: bool,
+    pub require_sha: bool,
+}
+
+impl Default for CaskInstallOptions {
+    fn default() -> Self {
+        Self {
+            link_binaries: true,
+            link_apps: true,
+            link_fonts: true,
+            force: false,
+            require_sha: false,
+        }
+    }
 }
 
 pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
+    resolve_cask_with_options(token, cask, CaskInstallOptions::default())
+}
+
+pub fn resolve_cask_with_options(
+    token: &str,
+    cask: &Value,
+    options: CaskInstallOptions,
+) -> Result<ResolvedCask, Error> {
     let mut url = required_string(cask, "url")?;
     let mut sha256 = required_string(cask, "sha256")?;
     let version = required_string(cask, "version")?;
@@ -45,21 +107,35 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
         }
     }
 
-    if sha256 == "no_check" {
-        return Err(Error::InvalidArgument {
-            message: format!("cask '{token}' uses an unsupported checksum mode: no_check"),
-        });
+    if sha256 == "no_check" || sha256 == ":no_check" {
+        let message = if options.require_sha {
+            format!("cask '{token}' uses sha256 no_check but --require-sha was requested")
+        } else {
+            format!("cask '{token}' uses an unsupported checksum mode: no_check")
+        };
+        return Err(Error::InvalidArgument { message });
     }
 
     let binaries = parse_binary_artifacts(cask)?;
     let apps = parse_app_artifacts(cask)?;
     let fonts = parse_font_artifacts(cask)?;
-    if binaries.is_empty() && apps.is_empty() && fonts.is_empty() {
+    let pkgs = parse_pkg_artifacts(cask)?;
+    let installers = parse_installer_artifacts(cask)?;
+    let appimages = parse_appimage_artifacts(cask)?;
+    let artifacts = parse_generic_artifacts(cask)?;
+    if binaries.is_empty()
+        && apps.is_empty()
+        && fonts.is_empty()
+        && pkgs.is_empty()
+        && installers.is_empty()
+        && appimages.is_empty()
+        && artifacts.is_empty()
+    {
         let found = artifact_types(cask);
         return Err(Error::InvalidArgument {
             message: format!(
                 "cask '{token}' has no supported artifacts (found: {found}); \
-                 only casks with 'binary', 'app', and 'font' artifacts are currently supported"
+                 only casks with 'binary', 'app', 'font', 'pkg', 'installer', 'appimage', and supported 'artifact' artifacts are currently supported"
             ),
         });
     }
@@ -73,6 +149,10 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
         binaries,
         apps,
         fonts,
+        pkgs,
+        installers,
+        appimages,
+        artifacts,
     })
 }
 
@@ -212,6 +292,97 @@ fn parse_font_artifacts(cask: &Value) -> Result<Vec<CaskFont>, Error> {
     Ok(fonts)
 }
 
+fn parse_pkg_artifacts(cask: &Value) -> Result<Vec<CaskPkg>, Error> {
+    let mut pkgs = Vec::new();
+    let artifacts = cask
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "failed to parse cask JSON: missing artifacts array".to_string(),
+        })?;
+
+    for artifact in artifacts {
+        let Some(value) = artifact.get("pkg") else {
+            continue;
+        };
+
+        for entry in artifact_entries(value)? {
+            let source = parse_pkg_entry(entry)?;
+            pkgs.push(CaskPkg { source });
+        }
+    }
+
+    Ok(pkgs)
+}
+
+fn parse_installer_artifacts(cask: &Value) -> Result<Vec<CaskInstaller>, Error> {
+    let mut installers = Vec::new();
+    let artifacts = cask
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "failed to parse cask JSON: missing artifacts array".to_string(),
+        })?;
+
+    for artifact in artifacts {
+        let Some(value) = artifact.get("installer") else {
+            continue;
+        };
+
+        for entry in artifact_entries(value)? {
+            installers.push(parse_installer_entry(entry)?);
+        }
+    }
+
+    Ok(installers)
+}
+
+fn parse_appimage_artifacts(cask: &Value) -> Result<Vec<CaskAppImage>, Error> {
+    let mut appimages = Vec::new();
+    let artifacts = cask
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "failed to parse cask JSON: missing artifacts array".to_string(),
+        })?;
+
+    for artifact in artifacts {
+        let Some(value) = artifact.get("appimage") else {
+            continue;
+        };
+
+        for entry in artifact_entries(value)? {
+            let (source, target) = parse_appimage_entry(entry)?;
+            appimages.push(CaskAppImage { source, target });
+        }
+    }
+
+    Ok(appimages)
+}
+
+fn parse_generic_artifacts(cask: &Value) -> Result<Vec<CaskGenericArtifact>, Error> {
+    let mut generic = Vec::new();
+    let artifacts = cask
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "failed to parse cask JSON: missing artifacts array".to_string(),
+        })?;
+
+    for artifact in artifacts {
+        let Some(value) = artifact.get("artifact") else {
+            continue;
+        };
+
+        for entry in artifact_entries(value)? {
+            let (source, target) = parse_generic_artifact_entry(entry)?;
+            generic.push(CaskGenericArtifact { source, target });
+        }
+    }
+
+    Ok(generic)
+}
+
 fn artifact_entries(value: &Value) -> Result<Vec<&Value>, Error> {
     let Some(entries) = value.as_array() else {
         return Ok(vec![value]);
@@ -306,11 +477,151 @@ fn parse_font_entry(entry: &Value) -> Result<(String, String), Error> {
     Ok((source.to_string(), target))
 }
 
+fn parse_pkg_entry(entry: &Value) -> Result<String, Error> {
+    if let Some(path) = entry.as_str() {
+        return Ok(path.to_string());
+    }
+
+    let array = entry.as_array().ok_or_else(|| Error::InvalidArgument {
+        message: "unsupported cask pkg artifact shape".to_string(),
+    })?;
+    array
+        .first()
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "unsupported cask pkg source".to_string(),
+        })
+}
+
+fn parse_installer_entry(entry: &Value) -> Result<CaskInstaller, Error> {
+    let object = entry.as_object().ok_or_else(|| Error::InvalidArgument {
+        message: "unsupported cask installer artifact shape".to_string(),
+    })?;
+
+    if let Some(manual) = object.get("manual").and_then(Value::as_str) {
+        return Ok(CaskInstaller::Manual {
+            source: manual.to_string(),
+        });
+    }
+
+    let Some(script) = object.get("script") else {
+        return Err(Error::InvalidArgument {
+            message: "unsupported cask installer artifact: expected manual or script".to_string(),
+        });
+    };
+
+    if let Some(executable) = script.as_str() {
+        return Ok(CaskInstaller::Script {
+            executable: executable.to_string(),
+            args: Vec::new(),
+            sudo: false,
+        });
+    }
+
+    let script = script.as_object().ok_or_else(|| Error::InvalidArgument {
+        message: "unsupported cask installer script shape".to_string(),
+    })?;
+    let executable = script
+        .get("executable")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "unsupported cask installer script executable".to_string(),
+        })?;
+    let args = script
+        .get("args")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect();
+    let sudo = script.get("sudo").and_then(Value::as_bool).unwrap_or(false);
+
+    Ok(CaskInstaller::Script {
+        executable: executable.to_string(),
+        args,
+        sudo,
+    })
+}
+
+fn parse_appimage_entry(entry: &Value) -> Result<(String, String), Error> {
+    if let Some(path) = entry.as_str() {
+        return Ok((path.to_string(), basename(path)?));
+    }
+
+    let array = entry.as_array().ok_or_else(|| Error::InvalidArgument {
+        message: "unsupported cask appimage artifact shape".to_string(),
+    })?;
+    let source = array
+        .first()
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "unsupported cask appimage source".to_string(),
+        })?;
+    let target = array
+        .get(1)
+        .and_then(Value::as_object)
+        .and_then(|obj| obj.get("target"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| basename(source).unwrap_or_else(|_| source.to_string()));
+
+    validate_relative_target(&target, "appimage")?;
+    Ok((source.to_string(), target))
+}
+
+fn parse_generic_artifact_entry(entry: &Value) -> Result<(String, String), Error> {
+    let array = entry.as_array().ok_or_else(|| Error::InvalidArgument {
+        message: "unsupported cask artifact shape".to_string(),
+    })?;
+    let source = array
+        .first()
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "unsupported cask artifact source".to_string(),
+        })?;
+    let target = array
+        .get(1)
+        .and_then(Value::as_object)
+        .and_then(|obj| obj.get("target"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "unsupported cask artifact target".to_string(),
+        })?;
+    let target = target
+        .strip_prefix("$HOMEBREW_PREFIX/")
+        .ok_or_else(|| Error::InvalidArgument {
+            message: format!(
+                "unsupported cask artifact target path '{target}'; only $HOMEBREW_PREFIX targets are currently supported"
+            ),
+        })?;
+    validate_safe_relative_path(target, "artifact")?;
+    Ok((source.to_string(), target.to_string()))
+}
+
 fn validate_relative_target(target: &str, artifact_kind: &str) -> Result<(), Error> {
     if target.contains('/') || target.contains('$') || target.contains('~') {
         return Err(Error::InvalidArgument {
             message: format!("unsupported cask {artifact_kind} target path '{target}'"),
         });
+    }
+    Ok(())
+}
+
+fn validate_safe_relative_path(target: &str, artifact_kind: &str) -> Result<(), Error> {
+    let path = std::path::Path::new(target);
+    if path.is_absolute() {
+        return Err(Error::InvalidArgument {
+            message: format!("unsupported cask {artifact_kind} target path '{target}'"),
+        });
+    }
+    for component in path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(Error::InvalidArgument {
+                message: format!("unsupported cask {artifact_kind} target path '{target}'"),
+            });
+        }
     }
     Ok(())
 }
@@ -502,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_cask_no_supported_artifacts_lists_found_types() {
+    fn resolve_cask_parses_pkg_only_casks() {
         let cask = serde_json::json!({
             "token": "pkg-only",
             "version": "1.0.0",
@@ -514,10 +825,99 @@ mod tests {
             ]
         });
 
-        let err = resolve_cask("pkg-only", &cask).unwrap_err();
+        let resolved = resolve_cask("pkg-only", &cask).unwrap();
+        assert_eq!(resolved.pkgs.len(), 1);
+        assert_eq!(resolved.pkgs[0].source, "Pkg.pkg");
+    }
+
+    #[test]
+    fn resolve_cask_parses_installer_scripts() {
+        let cask = serde_json::json!({
+            "token": "scripted",
+            "version": "1.0.0",
+            "url": "https://example.com/scripted.dmg",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [{
+                "installer": [{
+                    "script": {
+                        "executable": "Install.app/Contents/MacOS/install",
+                        "args": ["--mode=silent"],
+                        "sudo": true
+                    }
+                }]
+            }]
+        });
+
+        let resolved = resolve_cask("scripted", &cask).unwrap();
+        assert_eq!(
+            resolved.installers,
+            vec![CaskInstaller::Script {
+                executable: "Install.app/Contents/MacOS/install".to_string(),
+                args: vec!["--mode=silent".to_string()],
+                sudo: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn resolve_cask_parses_appimage_and_prefix_artifacts() {
+        let cask = serde_json::json!({
+            "token": "linux-tool",
+            "version": "1.0.0",
+            "url": "https://example.com/linux-tool.tar.gz",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [
+                { "appimage": [["LinuxTool.AppImage", {"target": "linux-tool"}]] },
+                { "artifact": ["share", {"target": "$HOMEBREW_PREFIX/share/linux-tool"}] }
+            ]
+        });
+
+        let resolved = resolve_cask("linux-tool", &cask).unwrap();
+        assert_eq!(resolved.appimages.len(), 1);
+        assert_eq!(resolved.appimages[0].target, "linux-tool");
+        assert_eq!(resolved.artifacts.len(), 1);
+        assert_eq!(resolved.artifacts[0].target, "share/linux-tool");
+    }
+
+    #[test]
+    fn resolve_cask_no_supported_artifacts_lists_found_types() {
+        let cask = serde_json::json!({
+            "token": "preflight-only",
+            "version": "1.0.0",
+            "url": "https://example.com/preflight-only.dmg",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [
+                { "preflight": null },
+                { "zap": [{ "trash": ["~/Library/Application Support/Installer"] }] }
+            ]
+        });
+
+        let err = resolve_cask("preflight-only", &cask).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("no supported artifacts"), "got: {msg}");
-        assert!(msg.contains("pkg"), "got: {msg}");
+        assert!(msg.contains("preflight"), "got: {msg}");
         assert!(msg.contains("zap"), "got: {msg}");
+    }
+
+    #[test]
+    fn resolve_cask_require_sha_rejects_no_check() {
+        let cask = serde_json::json!({
+            "token": "unchecked",
+            "version": "1.0.0",
+            "url": "https://example.com/unchecked.zip",
+            "sha256": "no_check",
+            "artifacts": [{ "app": ["Unchecked.app"] }]
+        });
+
+        let err = resolve_cask_with_options(
+            "unchecked",
+            &cask,
+            CaskInstallOptions {
+                require_sha: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("--require-sha"));
     }
 }
