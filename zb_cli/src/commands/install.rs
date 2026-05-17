@@ -8,11 +8,20 @@ use zb_io::{InstallProgress, ProgressCallback};
 use crate::ui::StdUi;
 use crate::utils::{normalize_formula_name, suggest_homebrew, suggest_missing_formula_matches};
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct InstallCommandOptions {
+    pub no_link: bool,
+    pub build_from_source: bool,
+    pub cask: bool,
+    pub no_binaries: bool,
+    pub require_sha: bool,
+    pub force: bool,
+}
+
 pub async fn execute(
     installer: &mut zb_io::Installer,
     formulas: Vec<String>,
-    no_link: bool,
-    build_from_source: bool,
+    options: InstallCommandOptions,
     ui: &mut StdUi,
 ) -> Result<(), zb_core::Error> {
     let start = Instant::now();
@@ -25,7 +34,12 @@ pub async fn execute(
     let mut normalized_names = Vec::new();
     let mut cask_names = Vec::new();
     for formula in &formulas {
-        match normalize_formula_name(formula) {
+        let requested = if options.cask {
+            format!("cask:{}", formula.trim())
+        } else {
+            formula.to_string()
+        };
+        match normalize_formula_name(&requested) {
             Ok(name) => {
                 if name.starts_with("cask:") {
                     cask_names.push(name);
@@ -44,7 +58,7 @@ pub async fn execute(
 
     if !normalized_names.is_empty() {
         let plan = match installer
-            .plan_with_options(&normalized_names, build_from_source)
+            .plan_with_options(&normalized_names, options.build_from_source)
             .await
         {
             Ok(p) => p,
@@ -175,7 +189,7 @@ pub async fn execute(
         }));
 
         let result_val = installer
-            .execute_with_progress(plan, !no_link, Some(progress_callback))
+            .execute_with_progress(plan, !options.no_link, Some(progress_callback))
             .await;
 
         {
@@ -234,7 +248,19 @@ pub async fn execute(
             cask_names.len()
         ))
         .map_err(ui_error)?;
-        let result = installer.install_casks(&cask_names, !no_link).await?;
+        let link = !options.no_link;
+        let result = installer
+            .install_casks_with_options(
+                &cask_names,
+                zb_io::CaskInstallOptions {
+                    link_binaries: link && !options.no_binaries,
+                    link_apps: link,
+                    link_fonts: link,
+                    force: options.force,
+                    require_sha: options.require_sha,
+                },
+            )
+            .await?;
         installed_count += result.installed;
     }
 

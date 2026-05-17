@@ -69,6 +69,55 @@ mod tests {
     }
 
     #[test]
+    fn install_accepts_cask_options() {
+        let cli = Cli::try_parse_from([
+            "zb",
+            "install",
+            "--cask",
+            "--no-binaries",
+            "--require-sha",
+            "--force",
+            "iterm2",
+        ])
+        .unwrap();
+        let super::Commands::Install {
+            formulas,
+            cask,
+            no_binaries,
+            require_sha,
+            force,
+            ..
+        } = cli.command
+        else {
+            panic!("expected install command");
+        };
+
+        assert_eq!(formulas, vec!["iterm2"]);
+        assert!(cask);
+        assert!(no_binaries);
+        assert!(require_sha);
+        assert!(force);
+    }
+
+    #[test]
+    fn uninstall_accepts_cask_and_zap_flags() {
+        let cli = Cli::try_parse_from(["zb", "uninstall", "--cask", "--zap", "iterm2"]).unwrap();
+        let super::Commands::Uninstall {
+            formulas,
+            cask,
+            zap,
+            ..
+        } = cli.command
+        else {
+            panic!("expected uninstall command");
+        };
+
+        assert_eq!(formulas, vec!["iterm2"]);
+        assert!(cask);
+        assert!(zap);
+    }
+
+    #[test]
     fn rejects_quiet_with_verbose() {
         let result = Cli::try_parse_from(["zb", "-v", "-q", "list"]);
         assert!(result.is_err());
@@ -102,6 +151,14 @@ pub enum Commands {
         no_link: bool,
         #[arg(long, short = 's')]
         build_from_source: bool,
+        #[arg(long, conflicts_with = "build_from_source")]
+        cask: bool,
+        #[arg(long = "no-binaries")]
+        no_binaries: bool,
+        #[arg(long)]
+        require_sha: bool,
+        #[arg(long)]
+        force: bool,
     },
     Bundle {
         #[command(subcommand)]
@@ -112,6 +169,10 @@ pub enum Commands {
         formulas: Vec<String>,
         #[arg(long)]
         all: bool,
+        #[arg(long)]
+        cask: bool,
+        #[arg(long)]
+        zap: bool,
     },
     Migrate {
         #[arg(long, short = 'y')]
@@ -119,9 +180,14 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
-    List,
+    List {
+        #[arg(long)]
+        cask: bool,
+    },
     Info {
         formula: String,
+        #[arg(long)]
+        cask: bool,
     },
     Doctor {
         #[arg(long)]

@@ -39,7 +39,16 @@ async fn install_from_file(
 
     let start = Instant::now();
     for formula in formulas {
-        install::execute(installer, vec![formula], no_link, false, ui).await?;
+        install::execute(
+            installer,
+            vec![formula],
+            install::InstallCommandOptions {
+                no_link,
+                ..Default::default()
+            },
+            ui,
+        )
+        .await?;
     }
 
     println!(
@@ -65,10 +74,7 @@ fn dump_to_file(
     }
 
     let installed = installer.list_installed()?;
-    let mut content = String::new();
-    for keg in &installed {
-        content.push_str(&format!("brew \"{}\"\n", keg.name));
-    }
+    let content = render_brewfile_dump(&installed);
 
     std::fs::write(file_path, content).map_err(|e| zb_core::Error::FileError {
         message: format!("failed to write {}: {}", file_path.display(), e),
@@ -82,6 +88,18 @@ fn dump_to_file(
     );
 
     Ok(())
+}
+
+fn render_brewfile_dump(installed: &[zb_io::storage::db::InstalledKeg]) -> String {
+    let mut content = String::new();
+    for keg in installed {
+        if let Some(token) = keg.name.strip_prefix("cask:") {
+            content.push_str(&format!("cask \"{}\"\n", token));
+        } else {
+            content.push_str(&format!("brew \"{}\"\n", keg.name));
+        }
+    }
+    content
 }
 
 fn load_manifest(path: &Path) -> Result<Vec<String>, zb_core::Error> {
@@ -239,5 +257,28 @@ mod tests {
     #[test]
     fn parse_brewfile_entry_skips_tap_directive() {
         assert_eq!(parse_brewfile_entry("tap \"homebrew/core\""), None);
+    }
+
+    #[test]
+    fn render_brewfile_dump_emits_cask_directives() {
+        let installed = vec![
+            zb_io::storage::InstalledKeg {
+                name: "wget".to_string(),
+                version: "1.0.0".to_string(),
+                store_key: "abc".to_string(),
+                installed_at: 0,
+            },
+            zb_io::storage::InstalledKeg {
+                name: "cask:iterm2".to_string(),
+                version: "3.5.0".to_string(),
+                store_key: "def".to_string(),
+                installed_at: 0,
+            },
+        ];
+
+        assert_eq!(
+            render_brewfile_dump(&installed),
+            "brew \"wget\"\ncask \"iterm2\"\n"
+        );
     }
 }

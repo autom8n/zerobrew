@@ -1,14 +1,23 @@
 use chrono::{DateTime, Local};
 use console::style;
 
-pub fn execute(installer: &mut zb_io::Installer, formula: String) -> Result<(), zb_core::Error> {
-    if let Some(keg) = installer.get_installed(&formula) {
+pub fn execute(
+    installer: &mut zb_io::Installer,
+    formula: String,
+    cask: bool,
+) -> Result<(), zb_core::Error> {
+    let name = if cask && !formula.starts_with("cask:") {
+        format!("cask:{formula}")
+    } else {
+        formula
+    };
+    if let Some(keg) = installer.get_installed(&name) {
         print_field("Name:", style(&keg.name).bold());
         print_field("Version:", &keg.version);
         print_field("Store key:", &keg.store_key[..12]);
         print_field("Installed:", format_timestamp(keg.installed_at));
     } else {
-        println!("Formula '{}' is not installed.", formula);
+        println!("Package '{}' is not installed.", name);
     }
 
     Ok(())

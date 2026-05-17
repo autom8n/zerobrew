@@ -57,12 +57,22 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             formulas,
             no_link,
             build_from_source,
+            cask,
+            no_binaries,
+            require_sha,
+            force,
         } => {
             commands::install::execute(
                 &mut installer,
                 formulas,
-                no_link,
-                build_from_source,
+                commands::install::InstallCommandOptions {
+                    no_link,
+                    build_from_source,
+                    cask,
+                    no_binaries,
+                    require_sha,
+                    force,
+                },
                 &mut ui,
             )
             .await
@@ -70,15 +80,18 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         Commands::Bundle { command } => {
             commands::bundle::execute(&mut installer, command, &mut ui).await
         }
-        Commands::Uninstall { formulas, all } => {
-            commands::uninstall::execute(&mut installer, formulas, all, &mut ui)
-        }
+        Commands::Uninstall {
+            formulas,
+            all,
+            cask,
+            zap,
+        } => commands::uninstall::execute(&mut installer, formulas, all, cask, zap, &mut ui),
         Commands::Migrate { yes, force } => {
             commands::migrate::execute(&mut installer, yes, force, &mut ui).await
         }
         Commands::Doctor { repair } => commands::doctor::execute(&mut installer, repair, &mut ui),
-        Commands::List => commands::list::execute(&mut installer),
-        Commands::Info { formula } => commands::info::execute(&mut installer, formula),
+        Commands::List { cask } => commands::list::execute(&mut installer, cask),
+        Commands::Info { formula, cask } => commands::info::execute(&mut installer, formula, cask),
         Commands::Gc => commands::gc::execute(&mut installer),
         Commands::Update => commands::update::execute(&mut installer),
         Commands::Outdated { json } => {

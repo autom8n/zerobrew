@@ -130,8 +130,7 @@ pub async fn execute(
         crate::commands::install::execute(
             installer,
             formula_names.clone(),
-            false, // no_link
-            false, // build_from_source
+            crate::commands::install::InstallCommandOptions::default(),
             ui,
         )
         .await

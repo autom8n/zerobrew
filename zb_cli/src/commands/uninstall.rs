@@ -6,8 +6,16 @@ pub fn execute(
     installer: &mut zb_io::Installer,
     formulas: Vec<String>,
     all: bool,
+    cask: bool,
+    zap: bool,
     ui: &mut StdUi,
 ) -> Result<(), zb_core::Error> {
+    if zap {
+        return Err(zb_core::Error::InvalidArgument {
+            message: "cask zap is not implemented yet".to_string(),
+        });
+    }
+
     let formulas = if all {
         let installed = installer.list_installed()?;
         if installed.is_empty() {
@@ -18,7 +26,12 @@ pub fn execute(
     } else {
         let mut normalized = Vec::with_capacity(formulas.len());
         for formula in formulas {
-            normalized.push(normalize_formula_name(&formula)?);
+            let requested = if cask {
+                format!("cask:{}", formula.trim())
+            } else {
+                formula
+            };
+            normalized.push(normalize_formula_name(&requested)?);
         }
         normalized
     };
